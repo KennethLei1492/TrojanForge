@@ -113,14 +113,56 @@ _FIELDS = ("target", "trigger", "payload", "stealth", "abstraction", "channel",
            "trigger_prob_exp", "area_budget", "implicit_alpha", "prop_delay")
 
 
-def random_genome(rng: np.random.Generator) -> TrojanGenome:
+from dataclasses import field
+
+
+@dataclass
+class Constraints:
+    """Restrict the design space. In `rtl_only` mode the generator only emits
+    insertable, iverilog-verifiable RTL Trojans (what the CSAW event needs)."""
+    rtl_only: bool = False
+    targets: list | None = None        # restrict to these targets (e.g. one challenge core)
+
+    def triggers(self):
+        return C.DIGITAL_TRIGGERS if self.rtl_only else C.TRIGGER_NAMES
+
+    def payloads(self):
+        return C.DIGITAL_PAYLOADS if self.rtl_only else C.PAYLOAD_NAMES
+
+    def stealths(self):
+        return C.DIGITAL_STEALTH if self.rtl_only else C.STEALTH_NAMES
+
+    def abstractions(self):
+        return ["rtl_soft_ip"] if self.rtl_only else C.ABSTRACTION_NAMES
+
+    def channels(self):
+        return C.DIGITAL_CHANNELS if self.rtl_only else C.CHANNEL_NAMES
+
+    def target_pool(self):
+        return self.targets or C.TARGET_NAMES
+
+    def apply(self, g: "TrojanGenome") -> "TrojanGenome":
+        """Snap a genome into the allowed subset (used after focus overrides)."""
+        if g.trigger not in self.triggers():
+            g.trigger = self.triggers()[0] if g.trigger not in self.triggers() else g.trigger
+        if self.rtl_only:
+            if g.trigger not in C.DIGITAL_TRIGGERS: g.trigger = "two_block_knock"
+            if g.payload not in C.DIGITAL_PAYLOADS: g.payload = "key_exfiltration"
+            if g.stealth not in C.DIGITAL_STEALTH: g.stealth = "resource_sharing"
+            g.abstraction = "rtl_soft_ip"
+            g.channel = "standard_io"
+        return g
+
+
+def random_genome(rng: np.random.Generator, cons: "Constraints | None" = None) -> TrojanGenome:
+    cons = cons or Constraints()
     return TrojanGenome(
-        target=rng.choice(C.TARGET_NAMES),
-        trigger=rng.choice(C.TRIGGER_NAMES),
-        payload=rng.choice(C.PAYLOAD_NAMES),
-        stealth=rng.choice(C.STEALTH_NAMES),
-        abstraction=rng.choice(C.ABSTRACTION_NAMES),
-        channel=rng.choice(C.CHANNEL_NAMES),
+        target=rng.choice(cons.target_pool()),
+        trigger=rng.choice(cons.triggers()),
+        payload=rng.choice(cons.payloads()),
+        stealth=rng.choice(cons.stealths()),
+        abstraction=rng.choice(cons.abstractions()),
+        channel=rng.choice(cons.channels()),
         trigger_prob_exp=float(rng.random()),
         area_budget=float(rng.random()),
         implicit_alpha=float(rng.random()),

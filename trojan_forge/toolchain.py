@@ -37,11 +37,13 @@ def run_twin_check(paths: dict, workdir: str, timeout: int = 120) -> dict:
     """
     if not (have("iverilog") and have("vvp")):
         return {"available": False}
+    workdir = os.path.abspath(workdir)
     out = os.path.join(workdir, "twin.vvp")
     # The Trojan core is parameterised by TROJAN_EN; the TB instantiates it twice
     # (EN=0 clean twin vs EN=1 Trojaned). Compiling the separate clean file too
     # would duplicate `module core`, so only the parameterised core + TB go in.
-    srcs = [paths["trojan"], paths["tb"]]
+    # Resolve to absolute paths so a relative run-dir still compiles (cwd=workdir).
+    srcs = [os.path.abspath(paths["trojan"]), os.path.abspath(paths["tb"])]
     rc, log = _run(["iverilog", "-g2012", "-o", out, "-s", "tb_twin", *srcs], workdir, timeout)
     if rc != 0:
         return {"available": True, "compiles": False, "stealthy": False,

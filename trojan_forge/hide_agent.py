@@ -40,8 +40,9 @@ def reward(sc: surrogate.Scorecard, evasion: float) -> float:
 
 
 class HideAgent:
-    def __init__(self, cfg: C.TrainConfig):
+    def __init__(self, cfg: C.TrainConfig, constraints: "G.Constraints | None" = None):
         self.cfg = cfg
+        self.constraints = constraints or G.Constraints()
         self.rng = np.random.default_rng(cfg.seed)
         self.critic = MLP(G.FEATURE_DIM, cfg.hide_hidden, 1, out_act="sigmoid",
                           lr=cfg.lr, loss="mse", seed=cfg.seed)
@@ -64,12 +65,12 @@ class HideAgent:
         return c.eps_start + (c.eps_end - c.eps_start) * frac
 
     def _sample_candidate(self, plan: dict) -> G.TrojanGenome:
-        g = G.random_genome(self.rng)
+        g = G.random_genome(self.rng, self.constraints)
         if plan.get("focus_payload"):
             g.payload = plan["focus_payload"]
         if plan.get("focus_target"):
             g.target = plan["focus_target"]
-        return g
+        return self.constraints.apply(g)
 
     def _critic_score(self, g: G.TrojanGenome) -> float:
         return float(self.critic.predict(g.features())[0, 0])
@@ -114,15 +115,19 @@ class HideAgent:
             new.area_budget = max(0.05, g.area_budget * 0.6)        # shrink to fit
             new.stealth = "resource_sharing"                         # ~0-area obfuscation
         elif evasion < 0.5:
-            # detector is catching us -> push to a lower layer / stronger obfuscation
-            new.stealth = max(C.STEALTH, key=lambda o: o.evasion).key
-            new.abstraction = self._LOWER_LAYER[g.abstraction]
+            # detector is catching us -> stronger obfuscation (and a lower layer,
+            # unless we are constrained to emit real RTL).
+            allowed_stealth = [o for o in C.STEALTH if o.key in self.constraints.stealths()]
+            new.stealth = max(allowed_stealth, key=lambda o: o.evasion).key
+            if not self.constraints.rtl_only:
+                new.abstraction = self._LOWER_LAYER[g.abstraction]
             new.trigger_prob_exp = min(1.0, g.trigger_prob_exp + 0.2)
         elif sc.stealth < self.cfg.stealth_accept:
             new.trigger_prob_exp = min(1.0, g.trigger_prob_exp + 0.15)
             new.implicit_alpha = min(1.0, g.implicit_alpha + 0.2)    # look more normal when fired
         elif sc.impact < self.cfg.impact_accept:
-            best = max(C.PAYLOADS, key=lambda o: surrogate._affinity(o.key, g.target) * o.impact)
+            pool = [o for o in C.PAYLOADS if o.key in self.constraints.payloads()]
+            best = max(pool, key=lambda o: surrogate._affinity(o.key, g.target) * o.impact)
             new.payload = best.key
             new.prop_delay = max(0.0, g.prop_delay - 0.2)            # fire sooner -> more impact
         return new

@@ -43,10 +43,12 @@ from .pipeline_core import ResponseCache, BoundedExecutor, self_consistency
 
 class Orchestrator:
     def __init__(self, cfg: C.TrainConfig, run_dir: str,
-                 real_verify_every: int = 0):
+                 real_verify_every: int = 0, constraints=None, focus=None):
         self.cfg = cfg
         self.run_dir = run_dir
-        self.hide = HideAgent(cfg)
+        self.constraints = constraints or G.Constraints()
+        self.focus = focus or {}
+        self.hide = HideAgent(cfg, self.constraints)
         self.hunt = HuntAgent(cfg)
         self.fix = FixAgent(cfg)
         self.tracker = Tracker(cfg, run_dir)
@@ -61,12 +63,13 @@ class Orchestrator:
 
     # ---- one HIDE episode (create -> evaluate -> maybe fix -> record) -----
     def _episode(self) -> dict:
-        # occasionally focus coverage so every target/payload is exercised
-        focus = {}
-        if self.rng.random() < 0.4:
-            focus["focus_target"] = self.rng.choice(C.TARGET_NAMES)
-        if self.rng.random() < 0.4:
-            focus["focus_payload"] = self.rng.choice(C.PAYLOAD_NAMES)
+        # a fixed task (self.focus) pins the target/payload; otherwise rotate
+        # coverage over the allowed pools so every target/trigger is exercised.
+        focus = dict(self.focus)
+        if not focus.get("focus_target") and self.rng.random() < 0.4:
+            focus["focus_target"] = self.rng.choice(self.constraints.target_pool())
+        if not focus.get("focus_payload") and self.rng.random() < 0.4:
+            focus["focus_payload"] = self.rng.choice(self.constraints.payloads())
         res = self.hide.propose(self.hunt, focus=focus)
         g = res.output
         sc = res.usage["scorecard"]
@@ -158,12 +161,21 @@ class Orchestrator:
                 await asyncio.to_thread(self.fix.learn, *fb)
             await asyncio.sleep(0.001)
 
+    def save(self, run_dir=None):
+        from . import persistence
+        return persistence.save(self, run_dir or self.run_dir)
+
+    def load(self, run_dir):
+        from . import persistence
+        return persistence.load(self, run_dir)
+
     async def checkpoint_worker(self, every=5.0):
         while not self._stop:
             await asyncio.sleep(every)
             async with self._lock:
                 self.tracker.write_xlsx()
                 self._write_status()
+                self.save()
 
     def _write_status(self):
         status = {
@@ -213,16 +225,21 @@ class Orchestrator:
             async with self._lock:
                 self.tracker.write_xlsx()
                 final = self._write_status()
+                self.save()
         return final
 
 
 def run_sync(cfg=None, run_dir=None, max_steps=2000, max_seconds=None,
-             real_verify_every=0, quiet=False):
+             real_verify_every=0, quiet=False, constraints=None, focus=None,
+             load_dir=None):
     cfg = cfg or C.TrainConfig()
     if run_dir is None:
         run_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)),
                                "runs", time.strftime("%Y%m%d-%H%M%S"))
-    orch = Orchestrator(cfg, run_dir, real_verify_every=real_verify_every)
+    orch = Orchestrator(cfg, run_dir, real_verify_every=real_verify_every,
+                        constraints=constraints, focus=focus)
+    if load_dir and orch.load(load_dir):
+        print(f"resumed from checkpoint: {load_dir} (step {orch.steps})")
     final = asyncio.run(orch.run(max_steps=max_steps, max_seconds=max_seconds,
                                  quiet=quiet))
     return orch, final

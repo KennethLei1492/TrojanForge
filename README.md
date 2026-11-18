@@ -51,6 +51,21 @@ python -m trojan_forge --steps 2000        # a bounded co-training run
 python -m trojan_forge --real-verify-every 200   # periodically audit with REAL iverilog
 ```
 
+**Event / contest mode** — only insertable, iverilog-verifiable RTL Trojans, with
+checkpointing so the model persists across runs:
+
+```powershell
+python -m trojan_forge --rtl-only --forever                       # train the real-RTL model 24/7
+python -m trojan_forge --rtl-only --load runs\prev --run-dir runs\prev   # resume a checkpoint
+python -m trojan_forge task --target ascon_aead128 --payload key_exfiltration
+```
+
+The `task` command does the full event flow for one target: **CREATE** a Trojan
+and prove it with real iverilog, **FIND** it in the emitted RTL (golden-model
+delta), and **FIX** it by patching the RTL and re-simulating to prove the payload
+no longer fires. Run `python verify_capabilities.py` for the same flow with a
+built-in demo.
+
 Every run writes to `runs/<timestamp>/`:
 
 * **`trojans.csv`** — append-only, one row per Trojan created (safe to `tail` live).
@@ -124,11 +139,28 @@ checkpointer — share the buffer and run forever. Hide waves are evaluated in
 parallel via the `pipeline_core` bounded executor.
 
 ### Ground truth ([`rtl_emitter.py`](trojan_forge/rtl_emitter.py), [`toolchain.py`](trojan_forge/toolchain.py))
-`--real-verify-every N` emits synthesizable Verilog for a genome — a clean core
-and a `TROJAN_EN`-gated twin plus a self-checking testbench that proves
-*bit-identical on 200 non-trigger words* **and** that the knock fires — and runs
-it under **real Icarus Verilog**, exactly like challenge 1's `tb_trojan`. Used
-sparsely to audit the surrogate.
+Emits synthesizable Verilog for a genome — a clean core and a `TROJAN_EN`-gated
+twin plus a self-checking testbench that proves *bit-identical on 200 non-trigger
+words* **and** that the trigger fires — and runs it under **real Icarus Verilog**,
+exactly like challenge 1's `tb_trojan`. Three core flavours (crypto / stream /
+generic) route by target family, and the digital triggers/payloads lower onto
+real RTL mechanisms (knock/magic/counter × leak/corrupt/stall/setbit).
+
+### Event-readiness bridges
+- **RTL-only generation** ([`genome.py`](trojan_forge/genome.py) `Constraints`) —
+  `--rtl-only` restricts the generator to insertable, iverilog-verifiable RTL
+  (excludes analog/sub-digital triggers), so every created Trojan is real and
+  simulatable. `--target`/`--payload` pin a task.
+- **Find on a *given* design** ([`extract.py`](trojan_forge/extract.py)) — extracts
+  the structural footprint from arbitrary Verilog and detects a Trojan as the
+  golden-model delta (clean vs suspect), so Hunt works on real RTL, not just
+  internal genomes.
+- **Fix with proof** ([`remediate.py`](trojan_forge/remediate.py)) — applies the
+  FixAgent's chosen action to the actual RTL (excise / tie-off / monitor) and
+  **re-runs the twin-check** to prove the payload no longer fires while clean
+  behaviour is preserved.
+- **Checkpointing** ([`persistence.py`](trojan_forge/persistence.py)) — all three
+  agents save/restore (backend-agnostic), so 24/7 training resumes with `--load`.
 
 ---
 

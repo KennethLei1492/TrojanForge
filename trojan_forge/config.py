@@ -237,6 +237,31 @@ BASELINE = {
     "targets": [o.key for o in TARGETS if o.baseline],
 }
 
+# ---------------------------------------------------------------------------
+# RTL-simulable subset: the Trojans that are actual insertable, iverilog-
+# verifiable RTL (what the CSAW AHA! event requires). Excludes sub-digital
+# (analog/thermal/RO/EM) triggers, pure side-channel payloads, and sub-netlist
+# insertion layers. Used when the generator runs in --rtl-only mode.
+# ---------------------------------------------------------------------------
+DIGITAL_TRIGGERS = [
+    "two_block_knock", "magic_nonce", "frame_counter", "combinational_constant",
+    "rare_data_pattern", "cheat_code_address", "comparator_wide", "lfsr_counter",
+    "rare_fsm_state", "counter_plus_data", "protocol_sequence",
+    "external_input_pin", "component_output", "always_on",
+]
+DIGITAL_PAYLOADS = [
+    "key_exfiltration", "auth_tag_bypass", "forced_nonce_reuse", "data_corruption",
+    "memory_readout", "output_inversion", "bitflip_fault", "instruction_corruption",
+    "privilege_escalation", "backdoor_access", "denial_of_service",
+    "performance_degradation",
+]
+DIGITAL_STEALTH = [
+    "param_gated", "resource_sharing", "dont_care_encoding", "split_trigger",
+    "timing_matched", "rare_node_insertion", "none",
+]
+DIGITAL_ABSTRACTIONS = ["rtl_soft_ip", "gate_firm_ip"]
+DIGITAL_CHANNELS = ["standard_io"]
+
 
 @dataclass
 class TrainConfig:
