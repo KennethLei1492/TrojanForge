@@ -1,0 +1,11 @@
+# TrojanForge dependencies
+# numpy is the only hard requirement (the NumPy backend has a full MLP + backprop).
+numpy>=1.26
+# torch is the preferred deep-learning backend (auto-detected; falls back to numpy).
+torch>=2.2
+# pandas + openpyxl drive the live tracking spreadsheet (xlsx). CSV works without them.
+pandas>=2.0
+openpyxl>=3.1
+# Optional ground-truth RTL verification uses the external Icarus Verilog / yosys
+# toolchain (oss-cad-suite). Not a pip package - install separately if you want
+# the --real-verify-every audit path. The surrogate loop needs none of it.
