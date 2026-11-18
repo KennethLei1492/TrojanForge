@@ -37,9 +37,19 @@ ACTIONS = ["tie_off_payload", "remove_trigger_logic", "monitor_assertion",
 # grounded efficacy: P(neutralise), collateral per (action, payload-class)
 # payload classes: exfil, bypass, corruption, dos, fault
 _CLASS = {
-    "key_exfiltration": "exfil", "auth_tag_bypass": "bypass",
-    "privilege_escalation": "bypass", "forced_nonce_reuse": "bypass",
-    "data_corruption": "corruption", "denial_of_service": "dos",
+    # leakage
+    "key_exfiltration": "exfil", "sidechannel_leak": "exfil",
+    "memory_readout": "exfil",
+    # control/access bypass
+    "auth_tag_bypass": "bypass", "forced_nonce_reuse": "bypass",
+    "privilege_escalation": "bypass", "backdoor_access": "bypass",
+    "instruction_corruption": "bypass",
+    # corruption
+    "data_corruption": "corruption", "output_inversion": "corruption",
+    # availability
+    "denial_of_service": "dos", "performance_degradation": "dos",
+    "reliability_aging": "dos", "energy_drain": "dos",
+    # fault
     "bitflip_fault": "fault",
 }
 #               (neutralise, collateral)

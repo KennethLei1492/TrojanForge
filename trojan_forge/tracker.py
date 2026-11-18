@@ -27,6 +27,7 @@ from . import config as C
 
 CSV_FIELDS = [
     "ts", "step", "gid", "target", "trigger", "payload", "stealth",
+    "abstraction", "channel", "baseline", "implicit_alpha", "prop_delay",
     "trigger_bits", "trigger_prob", "area_cells", "fits",
     "stealth_score", "impact", "static_detect", "detector_prob",
     "evasion", "reward", "accepted", "self_correct_rounds",

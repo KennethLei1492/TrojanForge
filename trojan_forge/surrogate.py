@@ -36,23 +36,56 @@ from .genome import TrojanGenome
 
 # target x payload affinity: how damaging this payload is on this target.
 # Grounded: exfil/auth/nonce belong on crypto; corruption on the filter; etc.
-_AFFINITY = {
-    "key_exfiltration": {"feistel_crypto_core": 1.0, "ascon_aead128": 1.0,
-                         "aes128_core": 1.0, "sha256_core": 0.7, "riscv_rv32i_core": 0.6,
-                         "dma_engine": 0.7},
-    "auth_tag_bypass": {"ascon_aead128": 1.0, "aes128_core": 0.9, "sha256_core": 0.8},
-    "forced_nonce_reuse": {"ascon_aead128": 1.0, "aes128_core": 0.9},
-    "data_corruption": {"fir_audio_filter": 1.0, "dma_engine": 0.8, "uart_controller": 0.7},
-    "denial_of_service": {"uart_controller": 0.9, "spi_peripheral": 0.9,
-                          "i2c_controller": 0.9, "fir_audio_filter": 0.8},
-    "privilege_escalation": {"riscv_rv32i_core": 1.0, "dma_engine": 0.9},
-    "bitflip_fault": {"aes128_core": 0.9, "feistel_crypto_core": 0.9,
-                      "sha256_core": 0.8, "riscv_rv32i_core": 0.8},
+# payload -> which target *families* it is damaging on (grounded in how each
+# attack actually works). Families expand to concrete targets below.
+_CRYPTO = ["feistel_crypto_core", "ascon_aead128", "aes128_core", "des_core",
+           "rsa_core", "sha256_core", "prng_trng"]
+_CPU = ["riscv_rv32i_core", "or1200_cpu", "pic_mcu", "mc8051_mcu"]
+_COMM = ["uart_rs232", "spi_peripheral", "i2c_controller", "ethernet_mac",
+         "wishbone_interconnect", "pcie_controller"]
+_MEM = ["memory_controller", "dma_engine"]
+_BENCH = ["iscas89_s15850", "iscas89_s35932", "itc99_b19"]
+
+_FAMILY_AFFINITY = {
+    "key_exfiltration":       {"crypto": 1.0, "cpu": 0.6, "mem": 0.7},
+    "auth_tag_bypass":        {"crypto": 1.0},
+    "forced_nonce_reuse":     {"crypto": 1.0},
+    "sidechannel_leak":       {"crypto": 1.0, "cpu": 0.7, "mem": 0.6},
+    "memory_readout":         {"mem": 1.0, "cpu": 0.9, "crypto": 0.7},
+    "data_corruption":        {"comm": 0.9, "mem": 0.8, "crypto": 0.6, "bench": 0.7},
+    "output_inversion":       {"bench": 1.0, "comm": 0.8, "crypto": 0.6},
+    "bitflip_fault":          {"crypto": 0.95, "cpu": 0.8, "bench": 0.7},
+    "instruction_corruption": {"cpu": 1.0},
+    "privilege_escalation":   {"cpu": 1.0, "mem": 0.85},
+    "backdoor_access":        {"cpu": 0.9, "comm": 0.85, "crypto": 0.7},
+    "denial_of_service":      {"comm": 0.95, "mem": 0.85, "bench": 0.8, "cpu": 0.7},
+    "performance_degradation":{"comm": 0.85, "cpu": 0.8, "bench": 0.8},
+    "reliability_aging":      {"cpu": 0.8, "crypto": 0.7, "bench": 0.7},
+    "energy_drain":           {"cpu": 0.8, "comm": 0.8, "mem": 0.7},
 }
 
 
+def _family(target: str) -> str:
+    if target in _CRYPTO: return "crypto"
+    if target in _CPU: return "cpu"
+    if target in _COMM: return "comm"
+    if target in _MEM: return "mem"
+    if target in _BENCH: return "bench"
+    return "other"
+
+
 def _affinity(payload: str, target: str) -> float:
-    return _AFFINITY.get(payload, {}).get(target, 0.35)
+    fam = _family(target)
+    base = _FAMILY_AFFINITY.get(payload, {}).get(fam, 0.35)
+    # a few high-value specific pairings (debug tap = backdoor, PMU = energy, etc.)
+    specials = {
+        ("backdoor_access", "jtag_debug_tap"): 1.0,
+        ("energy_drain", "power_management_unit"): 1.0,
+        ("privilege_escalation", "or1200_cpu"): 1.0,   # the A2 demonstration
+        ("sidechannel_leak", "prng_trng"): 1.0,
+        ("data_corruption", "gps_baseband"): 0.95,
+    }
+    return max(base, specials.get((payload, target), 0.0))
 
 
 @dataclass
@@ -77,26 +110,37 @@ class Scorecard:
 
 
 def score(g: TrojanGenome) -> Scorecard:
-    t, tr, pl, st = g.opts()
+    t, tr, pl, st, ab, ch = g.opts()
     bits = g.trigger_bits()
     area = g.area_cells()
     fits = area <= C.TrainConfig.device_lc_budget
 
     # --- stealth ---
-    rarity = min(1.0, bits / 64.0)                      # 64-bit trigger -> 1.0
+    # rarity, obfuscation, trigger evasion, abstraction level (lower-layer =
+    # stealthier), side-channel delivery, and implicit-alpha (how normal the
+    # output looks when it fires, arXiv:1605.08413) all contribute.
+    rarity = min(1.0, bits / 64.0)
     area_pen = min(1.0, area / (0.12 * C.TrainConfig.device_lc_budget))
-    stealth = (0.45 * rarity + 0.35 * st.evasion + 0.20 * tr.evasion) * (1.0 - 0.5 * area_pen)
+    stealth = (0.28 * rarity + 0.24 * st.evasion + 0.14 * tr.evasion
+               + 0.14 * ab.evasion + 0.08 * ch.evasion + 0.12 * g.implicit_alpha)
+    stealth *= (1.0 - 0.45 * area_pen)
     if not fits:
-        stealth *= 0.25                                 # a Trojan that won't fit is useless
+        stealth *= 0.25
     stealth = float(np.clip(stealth, 0.0, 1.0))
 
     # --- impact ---
     aff = _affinity(pl.key, t.key)
-    impact = 0.65 * pl.impact * aff + 0.20 * tr.impact + 0.15 * t.impact
+    impact = 0.60 * pl.impact * aff + 0.18 * tr.impact + 0.14 * t.impact + 0.08 * (1 - g.prop_delay)
     impact = float(np.clip(impact, 0.0, 1.0))
 
-    # --- static (non-learned) detectability ---
-    static = 0.55 * area_pen + 0.30 * (1 - st.evasion) + 0.15 * (1 - rarity)
+    # --- static (non-learned, netlist-level) detectability ---
+    # a static scanner works at RTL/gate level, so low-layer Trojans (transistor,
+    # layout, analog) and side-channel payloads largely escape it.
+    layer_visible = {"rtl_soft_ip": 1.0, "gate_firm_ip": 0.8,
+                     "transistor_hard_ip": 0.35, "layout_physical": 0.15}[ab.key]
+    static = (0.50 * area_pen + 0.30 * (1 - st.evasion) + 0.20 * (1 - rarity)) * layer_visible
+    if ch.key == "side_channel":
+        static *= 0.5
     if st.key == "none":
         static = min(1.0, static + 0.25)
     static_detect = float(np.clip(static, 0.0, 1.0))
@@ -141,16 +185,23 @@ def observable(g: TrojanGenome, trojaned: bool = True) -> np.ndarray:
     # (stealth technique evasion) and a well-matched design shrink the delta
     # toward zero - and a zero-delta Trojan is, by construction, invisible, which
     # is exactly the hard case the detector must still try to catch.
-    t, tr, pl, st = g.opts()
+    t, tr, pl, st, ab, ch = g.opts()
     area_norm = min(1.0, g.area_cells() / (0.12 * C.TrainConfig.device_lc_budget))
     # Combinational footprint depends on the trigger TYPE, not its rarity bits:
     # a two-block knock reaches 2^-64 across time with two small compares (tiny
     # footprint), while a combinational_constant needs a wide, visible match.
-    comb = 1.0 - tr.evasion                      # low for knock/nonce, high for constant
+    comb = 1.0 - tr.evasion
     extra_state = 0.6 if g.trigger in ("frame_counter", "counter_plus_data",
-                                       "rare_fsm_state") else 0.12
+                                       "lfsr_counter", "rare_fsm_state",
+                                       "ring_oscillator_aging") else 0.12
     timing_delta = 0.0 if st.key == "timing_matched" else min(1.0, 0.1 + 0.4 * area_norm)
     shrink = st.evasion
+    # A lower insertion layer shrinks the *digital-netlist* footprint toward
+    # zero (A2 analog / layout Trojans are invisible to RTL/gate scanners) - the
+    # detector here works on digital features, so those genuinely evade it.
+    layer_shrink = {"rtl_soft_ip": 0.0, "gate_firm_ip": 0.25,
+                    "transistor_hard_ip": 0.70, "layout_physical": 0.90}[ab.key]
+    shrink = min(0.98, shrink + layer_shrink * (1 - shrink))
     delta = np.array([
         area_norm * (1 - 0.85 * shrink),
         comb * (1 - 0.6 * shrink),
@@ -174,6 +225,16 @@ def real_verify(g: TrojanGenome, workdir: str) -> dict:
     from . import toolchain
     if not toolchain.have("iverilog"):
         return {"available": False}
+    # Sub-digital Trojans (analog A2 trigger, transistor/layout insertion) are by
+    # construction invisible to RTL simulation - that is exactly their threat
+    # model. Report them as out-of-scope for the digital twin-check rather than
+    # emitting a misleading digital stand-in.
+    if (g.abstraction in ("transistor_hard_ip", "layout_physical")
+            or g.trigger in ("analog_charge_accum", "thermal_trigger",
+                             "ring_oscillator_aging", "em_antenna")):
+        return {"available": True, "compiles": None, "stealthy": None,
+                "triggers": None, "note": "sub-digital Trojan: not RTL-simulable "
+                "(requires SPICE/physical verification)"}
     paths = emit_project(g, workdir)
     res = toolchain.run_twin_check(paths, workdir)
     res["available"] = True

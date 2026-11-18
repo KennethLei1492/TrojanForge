@@ -1,22 +1,17 @@
 """TrojanGenome - one hardware-Trojan design, and its feature encoding.
 
-A genome is the full specification the HideAgent emits and the HuntAgent /
-FixAgent consume:
+Six categorical axes + four continuous attributes (grounded in the taxonomy,
+see config.py and SOURCES.md):
 
-    (target, trigger, payload, stealth, trigger_prob_exp, area_budget)
+  categorical: target, trigger, payload, stealth, abstraction, channel
+  continuous:  trigger_prob_exp  -> trigger rarity in bits, 2^-(4..64)
+               area_budget       -> fraction of device logic-cell budget
+               implicit_alpha    -> P(output looks normal when triggered) [arXiv:1605.08413]
+               prop_delay        -> payload propagation delay, cycles (normalised)
 
-The four categorical choices come from config.py; the two continuous knobs are
-learned per-design:
-
-    trigger_prob_exp  in [0,1] -> maps to 2^-(4 .. 64): how many bits the trigger
-                      condition is (challenge_1's knock is the 2^-64 extreme).
-    area_budget       in [0,1] -> fraction of the device logic-cell budget the
-                      Trojan is allowed to spend.
-
-`features()` produces the fixed-width vector every network sees: one-hot of the
-four categoricals, the two continuous knobs, and the four numeric priors of each
-chosen option (impact/rarity/area/evasion). That gives the networks both the
-identity of the choice and its grounded physical prior.
+`features()` is the fixed-width vector every network sees: one-hot of the six
+categoricals, the four continuous attributes, and the four numeric priors
+(impact/rarity/area/evasion) of each chosen categorical option.
 """
 
 from __future__ import annotations
@@ -35,20 +30,17 @@ def _onehot(name: str, names: list[str]) -> np.ndarray:
     return v
 
 
-# feature layout width, computed once
 FEATURE_DIM = (
-    len(C.TARGET_NAMES) + len(C.TRIGGER_NAMES)
-    + len(C.PAYLOAD_NAMES) + len(C.STEALTH_NAMES)
-    + 2                      # continuous knobs
-    + 4 * 4                  # 4 priors x 4 chosen options
+    len(C.TARGET_NAMES) + len(C.TRIGGER_NAMES) + len(C.PAYLOAD_NAMES)
+    + len(C.STEALTH_NAMES) + len(C.ABSTRACTION_NAMES) + len(C.CHANNEL_NAMES)
+    + 4                        # continuous attributes
+    + 4 * 6                    # 4 priors x 6 chosen options
 )
 
-# number of discrete head outputs the HideAgent policy scores
 HEAD_SIZES = {
-    "target": len(C.TARGET_NAMES),
-    "trigger": len(C.TRIGGER_NAMES),
-    "payload": len(C.PAYLOAD_NAMES),
-    "stealth": len(C.STEALTH_NAMES),
+    "target": len(C.TARGET_NAMES), "trigger": len(C.TRIGGER_NAMES),
+    "payload": len(C.PAYLOAD_NAMES), "stealth": len(C.STEALTH_NAMES),
+    "abstraction": len(C.ABSTRACTION_NAMES), "channel": len(C.CHANNEL_NAMES),
 }
 
 
@@ -58,51 +50,52 @@ class TrojanGenome:
     trigger: str
     payload: str
     stealth: str
+    abstraction: str = "rtl_soft_ip"
+    channel: str = "standard_io"
     trigger_prob_exp: float = 0.5   # [0,1]
     area_budget: float = 0.3        # [0,1]
+    implicit_alpha: float = 0.5     # [0,1] - how normal the output looks when fired
+    prop_delay: float = 0.1         # [0,1] - payload propagation delay
 
-    # ---- derived physical quantities (grounded) ----
     def trigger_bits(self) -> float:
-        """Map the knob to an effective trigger width in bits (4..64)."""
         return 4.0 + self.trigger_prob_exp * 60.0
 
     def trigger_probability(self) -> float:
         return 2.0 ** (-self.trigger_bits())
 
     def area_cells(self) -> int:
-        """Estimated extra logic cells, grounded in the chosen stealth technique.
-
-        resource_sharing pushes overhead toward ~0 (challenge note: +0 area);
-        'none' is the full ask. Range anchored to the submission's +30..+300 LC.
-        """
         base = self.area_budget * C.TrainConfig.device_lc_budget * 0.08
         st = C.STEALTH_IX[self.stealth]
-        return int(max(2, base * (0.1 + st.area)))
+        return int(max(1, base * (0.1 + st.area)))
 
     def opts(self):
         return (C.TARGET_IX[self.target], C.TRIGGER_IX[self.trigger],
-                C.PAYLOAD_IX[self.payload], C.STEALTH_IX[self.stealth])
+                C.PAYLOAD_IX[self.payload], C.STEALTH_IX[self.stealth],
+                C.ABSTRACTION_IX[self.abstraction], C.CHANNEL_IX[self.channel])
 
     def features(self) -> np.ndarray:
-        t, tr, pl, st = self.opts()
-        priors = np.array([
-            t.impact, t.rarity, t.area, t.evasion,
-            tr.impact, tr.rarity, tr.area, tr.evasion,
-            pl.impact, pl.rarity, pl.area, pl.evasion,
-            st.impact, st.rarity, st.area, st.evasion,
-        ], dtype=np.float32)
+        opts = self.opts()
+        priors = np.array([v for o in opts
+                           for v in (o.impact, o.rarity, o.area, o.evasion)],
+                          dtype=np.float32)
         return np.concatenate([
             _onehot(self.target, C.TARGET_NAMES),
             _onehot(self.trigger, C.TRIGGER_NAMES),
             _onehot(self.payload, C.PAYLOAD_NAMES),
             _onehot(self.stealth, C.STEALTH_NAMES),
-            np.array([self.trigger_prob_exp, self.area_budget], dtype=np.float32),
+            _onehot(self.abstraction, C.ABSTRACTION_NAMES),
+            _onehot(self.channel, C.CHANNEL_NAMES),
+            np.array([self.trigger_prob_exp, self.area_budget,
+                      self.implicit_alpha, self.prop_delay], dtype=np.float32),
             priors,
         ])
 
     def gid(self) -> str:
-        raw = f"{self.target}|{self.trigger}|{self.payload}|{self.stealth}|" \
-              f"{self.trigger_prob_exp:.3f}|{self.area_budget:.3f}"
+        raw = "|".join(str(x) for x in (
+            self.target, self.trigger, self.payload, self.stealth,
+            self.abstraction, self.channel,
+            round(self.trigger_prob_exp, 3), round(self.area_budget, 3),
+            round(self.implicit_alpha, 3), round(self.prop_delay, 3)))
         return hashlib.sha1(raw.encode()).hexdigest()[:12]
 
     def as_row(self) -> dict:
@@ -112,6 +105,13 @@ class TrojanGenome:
         d["area_cells"] = self.area_cells()
         return d
 
+    def copy(self) -> "TrojanGenome":
+        return TrojanGenome(**asdict(self))
+
+
+_FIELDS = ("target", "trigger", "payload", "stealth", "abstraction", "channel",
+           "trigger_prob_exp", "area_budget", "implicit_alpha", "prop_delay")
+
 
 def random_genome(rng: np.random.Generator) -> TrojanGenome:
     return TrojanGenome(
@@ -119,18 +119,10 @@ def random_genome(rng: np.random.Generator) -> TrojanGenome:
         trigger=rng.choice(C.TRIGGER_NAMES),
         payload=rng.choice(C.PAYLOAD_NAMES),
         stealth=rng.choice(C.STEALTH_NAMES),
+        abstraction=rng.choice(C.ABSTRACTION_NAMES),
+        channel=rng.choice(C.CHANNEL_NAMES),
         trigger_prob_exp=float(rng.random()),
         area_budget=float(rng.random()),
-    )
-
-
-def from_choices(target_i, trigger_i, payload_i, stealth_i,
-                 prob_exp, area_budget) -> TrojanGenome:
-    return TrojanGenome(
-        target=C.TARGET_NAMES[target_i],
-        trigger=C.TRIGGER_NAMES[trigger_i],
-        payload=C.PAYLOAD_NAMES[payload_i],
-        stealth=C.STEALTH_NAMES[stealth_i],
-        trigger_prob_exp=float(np.clip(prob_exp, 0, 1)),
-        area_budget=float(np.clip(area_budget, 0, 1)),
+        implicit_alpha=float(rng.random()),
+        prop_delay=float(rng.random()),
     )

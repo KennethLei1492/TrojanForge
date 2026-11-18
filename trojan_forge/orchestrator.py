@@ -96,7 +96,12 @@ class Orchestrator:
         row = {
             "ts": round(time.time(), 2), "step": self.steps, "gid": g.gid(),
             "target": g.target, "trigger": g.trigger, "payload": g.payload,
-            "stealth": g.stealth, "trigger_bits": round(g.trigger_bits(), 1),
+            "stealth": g.stealth, "abstraction": g.abstraction, "channel": g.channel,
+            "baseline": (g.trigger in C.BASELINE["triggers"]
+                         or g.payload in C.BASELINE["payloads"]
+                         or g.target in C.BASELINE["targets"]),
+            "implicit_alpha": round(g.implicit_alpha, 3), "prop_delay": round(g.prop_delay, 3),
+            "trigger_bits": round(g.trigger_bits(), 1),
             "trigger_prob": f"2^-{g.trigger_bits():.0f}",
             "area_cells": sc.area_cells, "fits": sc.fits,
             "stealth_score": round(sc.stealth, 4), "impact": round(sc.impact, 4),

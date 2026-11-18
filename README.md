@@ -64,11 +64,32 @@ Every run writes to `runs/<timestamp>/`:
 ## How it works
 
 ### The design space ([`config.py`](trojan_forge/config.py), [`genome.py`](trojan_forge/genome.py))
-A `TrojanGenome` is `(target, trigger, payload, stealth, trigger_prob_exp,
-area_budget)`. Eight triggers (incl. the 2⁻⁶⁴ knock, 128-frame counter, magic
-nonce), seven payloads (key exfil, auth bypass, nonce reuse, FIR corruption, …),
-ten hardware targets (the three CSAW cores + AES/RISC-V/UART/SPI/I²C/…), six
-stealth techniques. Every option carries grounded numeric priors.
+A `TrojanGenome` spans **six categorical axes** — `target, trigger, payload,
+stealth, abstraction-level, payload-channel` — plus **four continuous
+attributes** (trigger rarity bits, area budget, implicit-α, propagation delay),
+a categorical space of **~505,000 combinations**. The CSAW 2026 designs are the
+flagged **baseline** (`baseline=True`); the rest is grounded in the public
+hardware-Trojan literature so the system covers *all kinds* of Trojans across
+*all kinds* of hardware (see [SOURCES.md](SOURCES.md)):
+
+* **18 triggers** — CSAW knock / magic-nonce / frame-counter, plus combinational
+  comparators, LFSR/counter time-bombs, rare FSM states, protocol sequences,
+  external-input, and **analog / sub-digital** triggers (A2 charge-accumulation,
+  thermal, ring-oscillator aging, EM antenna).
+* **15 payloads** — the Trust-Hub effect classes: information leakage (key exfil,
+  side-channel, memory readout), functional corruption (output inversion, fault
+  injection, instruction corruption), control (privilege escalation, backdoor),
+  and availability/parametric (DoS, performance degradation, aging, energy drain).
+* **26 hardware targets** — the three CSAW cores plus the Trust-Hub families
+  (AES/DES/RSA/SHA, PIC/MC8051, RS-232/Ethernet/wb_conmax/memctrl, ISCAS89
+  s-series, ITC99 b19) and RISC-V/OR1200/DMA/PCIe/JTAG/GPS/PMU.
+* **9 stealth techniques** + **4 abstraction levels** (RTL→gate→transistor→layout,
+  deciding which detectors can even see the Trojan) + **2 channels** (standard-I/O
+  vs side-channel). Every option carries grounded numeric priors.
+
+Taxonomy axes follow Tehranipoor & Koushanfar (2010), Trust-Hub, the
+arXiv:1605.08413 formal trigger model (dimension *d*, delay *t*, implicit *α*),
+and A2 (Yang 2016) for the analog layer — all cited in [SOURCES.md](SOURCES.md).
 
 ### The grounded verifier ([`surrogate.py`](trojan_forge/surrogate.py))
 Scores a genome's **stealth, impact, device fit and static detectability** from
@@ -112,10 +133,19 @@ sparsely to audit the surrogate.
 ---
 
 ## What it demonstrates
-Within a couple of minutes of self-play the generator **rediscovers the human
-team's actual winning Trojans** — `feistel_crypto_core + two_block_knock +
-key_exfiltration` (challenge 1) and `ascon_aead128 + two_block_knock +
-auth_tag_bypass` (challenge 2B) — at high evasion, while the detector keeps
-co-adapting. That is the whole system working as one: create an impactful
-stealthy Trojan, detect Trojans using what it created, and patch the damage —
-training itself to improve the entire time.
+Within a couple of minutes of self-play the generator **rediscovers real-world
+attacks on its own**:
+
+* the human team's winning CSAW Trojans — `feistel_crypto_core + two_block_knock
+  + key_exfiltration` (challenge 1), `ascon_aead128 + ... + auth_tag_bypass`
+  (challenge 2B);
+* and, across the broadened space, the **A2 analog attack** — `analog_charge_accum
+  + analog_sublayer + layout_physical + privilege_escalation` on a microcontroller
+  (the Yang 2016 threat model), which a digital netlist scanner cannot see.
+
+As the generator pushes into sub-digital evasion the detector's catch-rate drops
+and it must re-learn — a genuine arms race, with coverage spread across 20+
+hardware targets and most trigger/payload classes, baseline and novel alike.
+That is the whole system working as one: create an impactful stealthy Trojan,
+detect Trojans using what it created, and patch the damage — training itself to
+improve the entire time.

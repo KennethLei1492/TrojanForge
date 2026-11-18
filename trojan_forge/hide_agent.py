@@ -104,24 +104,27 @@ class HideAgent:
                                  "impact": sc.impact, "evasion": evasion,
                                  "fits": sc.fits, "scorecard": sc})
 
+    _LOWER_LAYER = {"rtl_soft_ip": "gate_firm_ip", "gate_firm_ip": "transistor_hard_ip",
+                    "transistor_hard_ip": "layout_physical", "layout_physical": "layout_physical"}
+
     def _revise(self, g, sc, evasion, detector):
         """Fix the single weakest external signal. No self-generated 'fixes'."""
-        new = G.TrojanGenome(**{k: getattr(g, k) for k in
-                                ("target", "trigger", "payload", "stealth",
-                                 "trigger_prob_exp", "area_budget")})
+        new = g.copy()
         if not sc.fits or sc.area_cells > 0.1 * self.cfg.device_lc_budget:
-            new.area_budget = max(0.05, g.area_budget * 0.6)       # shrink to fit
-            new.stealth = "resource_sharing"                        # ~0-area obfuscation
+            new.area_budget = max(0.05, g.area_budget * 0.6)        # shrink to fit
+            new.stealth = "resource_sharing"                         # ~0-area obfuscation
         elif evasion < 0.5:
-            # detector is catching us -> raise obfuscation / rarity
+            # detector is catching us -> push to a lower layer / stronger obfuscation
             new.stealth = max(C.STEALTH, key=lambda o: o.evasion).key
-            new.trigger_prob_exp = min(1.0, g.trigger_prob_exp + 0.25)
-        elif sc.stealth < self.cfg.stealth_accept:
+            new.abstraction = self._LOWER_LAYER[g.abstraction]
             new.trigger_prob_exp = min(1.0, g.trigger_prob_exp + 0.2)
+        elif sc.stealth < self.cfg.stealth_accept:
+            new.trigger_prob_exp = min(1.0, g.trigger_prob_exp + 0.15)
+            new.implicit_alpha = min(1.0, g.implicit_alpha + 0.2)    # look more normal when fired
         elif sc.impact < self.cfg.impact_accept:
-            # pick a higher-affinity payload for this target
             best = max(C.PAYLOADS, key=lambda o: surrogate._affinity(o.key, g.target) * o.impact)
             new.payload = best.key
+            new.prop_delay = max(0.0, g.prop_delay - 0.2)            # fire sooner -> more impact
         return new
 
     def propose(self, detector, focus=None) -> TaskResult:
